@@ -1,43 +1,50 @@
 package main
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 type Cache[K comparable, V any] interface {
 	Get(key K) (V, bool)
-	Put(key K, value V, ttl time.Duration)
+	Put(key K, value V)
 	Size() int
 }
 
-type Node[S comparable, T any] struct {
-	key       S
-	data      T
-	next      *Node[S, T]
-	prev      *Node[S, T]
+type Node[K comparable, V any] struct {
+	key       K
+	data      V
+	next      *Node[K, V]
+	prev      *Node[K, V]
 	expiresAt time.Time
 }
 
-type DoublyLinkedList[S comparable, T any] struct {
-	head   *Node[S, T]
-	tail   *Node[S, T]
+type DoublyLinkedList[K comparable, V any] struct {
+	head   *Node[K, V]
+	tail   *Node[K, V]
 	length int
 }
 
-type LRUCache[S comparable, T any] struct {
+type LRUCache[K comparable, V any] struct {
 	capacity         int
-	hashMap          map[S]*Node[S, T]
-	doublyLinkedList *DoublyLinkedList[S, T]
+	hashMap          map[K]*Node[K, V]
+	doublyLinkedList *DoublyLinkedList[K, V]
+	defaultTTL       time.Duration
+	mu               sync.RWMutex
 }
 
-func (cache *LRUCache[S, T]) Get(key S) (T, bool) {
+func (cache *LRUCache[K, V]) Get(key K) (V, bool) {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
 	node, ok := cache.hashMap[key]
 	if !ok {
-		var zero T
+		var zero V
 		return zero, false
 	}
 	if node.expiresAt.Before(time.Now()) {
 		cache.doublyLinkedList.RemoveNode(node)
 		delete(cache.hashMap, key)
-		var zero T
+		var zero V
 		return zero, false
 	} else {
 		cache.doublyLinkedList.MoveToFront(node)
@@ -45,17 +52,19 @@ func (cache *LRUCache[S, T]) Get(key S) (T, bool) {
 	}
 }
 
-func (cache *LRUCache[S, T]) Put(key S, nodeData T, ttl time.Duration) {
+func (cache *LRUCache[K, V]) Put(key K, nodeData V) {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
 	nodeIn, ok := cache.hashMap[key]
 	if ok {
 		nodeIn.data = nodeData
-		nodeIn.expiresAt = time.Now().Add(ttl)
+		nodeIn.expiresAt = time.Now().Add(cache.defaultTTL)
 		cache.doublyLinkedList.MoveToFront(nodeIn)
 	} else {
-		newNode := &Node[S, T]{
+		newNode := &Node[K, V]{
 			key:       key,
 			data:      nodeData,
-			expiresAt: time.Now().Add(ttl),
+			expiresAt: time.Now().Add(cache.defaultTTL),
 		}
 		cache.hashMap[key] = newNode
 		cache.doublyLinkedList.AddToFront(newNode)
@@ -69,11 +78,13 @@ func (cache *LRUCache[S, T]) Put(key S, nodeData T, ttl time.Duration) {
 	}
 }
 
-func (cache *LRUCache[S, T]) Size() int {
+func (cache *LRUCache[K, V]) Size() int {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
 	return cache.doublyLinkedList.length
 }
 
-func (list *DoublyLinkedList[S, T]) AddToFront(n *Node[S, T]) {
+func (list *DoublyLinkedList[K, V]) AddToFront(n *Node[K, V]) {
 	if n == nil {
 		return
 	}
@@ -92,7 +103,7 @@ func (list *DoublyLinkedList[S, T]) AddToFront(n *Node[S, T]) {
 	list.length++
 }
 
-func (list *DoublyLinkedList[S, T]) AddToEnd(n *Node[S, T]) {
+func (list *DoublyLinkedList[K, V]) AddToEnd(n *Node[K, V]) {
 	if n == nil {
 		return
 	}
@@ -111,7 +122,7 @@ func (list *DoublyLinkedList[S, T]) AddToEnd(n *Node[S, T]) {
 	list.length++
 }
 
-func (list *DoublyLinkedList[S, T]) RemoveNode(n *Node[S, T]) {
+func (list *DoublyLinkedList[K, V]) RemoveNode(n *Node[K, V]) {
 	if n == nil {
 		return
 	}
@@ -138,7 +149,7 @@ func (list *DoublyLinkedList[S, T]) RemoveNode(n *Node[S, T]) {
 	list.length--
 }
 
-func (list *DoublyLinkedList[S, T]) MoveToFront(n *Node[S, T]) {
+func (list *DoublyLinkedList[K, V]) MoveToFront(n *Node[K, V]) {
 	if n == nil || n == list.head {
 		return
 	}
@@ -147,7 +158,7 @@ func (list *DoublyLinkedList[S, T]) MoveToFront(n *Node[S, T]) {
 	list.AddToFront(n)
 }
 
-func (list *DoublyLinkedList[S, T]) PopTail() *Node[S, T] {
+func (list *DoublyLinkedList[K, V]) PopTail() *Node[K, V] {
 	if list.tail == nil {
 		return nil
 	}
@@ -166,4 +177,13 @@ func (list *DoublyLinkedList[S, T]) PopTail() *Node[S, T] {
 
 	list.length--
 	return node
+}
+
+func NewLRUCache[K comparable, V any](capacity int, defaultTTL time.Duration) *LRUCache[K, V] {
+	return &LRUCache[K, V]{
+		capacity:         capacity,
+		hashMap:          make(map[K]*Node[K, V]),
+		doublyLinkedList: &DoublyLinkedList[K, V]{},
+		defaultTTL:       defaultTTL,
+	}
 }
